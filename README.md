@@ -167,8 +167,8 @@ Watch the token counts too. Each call is a fresh process, so the system prompt a
 
 | Claude invocation | Cached input tokens per call |
 |---|---:|
-| stock system prompt | ~12,500 |
-| custom `system=` (what devllm encourages) | ~4,100 |
+| stock system prompt (`system=None`) | ~12,500 |
+| `devllm`'s default `system=` | ~4,100 |
 
 That per-call overhead — not the number of requests — is what exhausts a subscription's limits.
 
@@ -186,6 +186,7 @@ These cost real debugging time. They're solved inside `devllm`; they're document
 | **cp1252 consoles** | Printing `₹` (or any non-Latin-1 char) raises `UnicodeEncodeError` on a default Windows console | `sys.stdout.reconfigure(encoding="utf-8")` — `devllm`'s CLI does this for you |
 | **Noisy Codex stdout** | stdout is a human transcript: banner, token counts, log lines | read the answer from `-o <file>`, don't scrape |
 | **Agents that wander** | Left alone, both CLIs will happily read and write your files | `devllm` disables their tools by default (`tools=True` to opt in) |
+| **They think they're coding assistants** | With its stock prompt, Claude Code *refuses* ordinary questions: "phone buying advice isn't something I can help well with" | `devllm` replaces the system prompt by default (`DEFAULT_SYSTEM`). Pass `system=None` to get the CLI's own identity back |
 
 ---
 

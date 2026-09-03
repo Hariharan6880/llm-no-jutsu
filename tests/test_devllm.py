@@ -15,7 +15,11 @@ from devllm import (
     OutputParseError,
     get_backend,
 )
-from devllm.base import BackendInvocationError, BackendTimeoutError
+from devllm.base import (
+    DEFAULT_SYSTEM,
+    BackendInvocationError,
+    BackendTimeoutError,
+)
 
 
 def _completed(stdout="", returncode=0, stderr=""):
@@ -119,6 +123,37 @@ class TestClaude(unittest.TestCase):
         self.assertNotIn("--disallowedTools", run.call_args[0][0])
 
 
+class TestDefaultSystemPrompt(unittest.TestCase):
+    """Both CLIs are coding agents. Without a replacement system prompt,
+    Claude Code refuses ordinary questions with "I'm a software engineering
+    assistant", which makes it useless as a general backend."""
+
+    @mock.patch("devllm.claude.resolve_executable", return_value="claude.CMD")
+    @mock.patch("devllm.claude.run_process")
+    def test_claude_replaces_the_stock_prompt(self, run, _which):
+        run.return_value = (_completed(json.dumps(CLAUDE_ENVELOPE)), 1.0)
+        ClaudeCLI().generate("hi")
+        argv = run.call_args[0][0]
+        self.assertIn("--system-prompt", argv)
+        self.assertIn(DEFAULT_SYSTEM, argv)
+
+    @mock.patch("devllm.claude.resolve_executable", return_value="claude.CMD")
+    @mock.patch("devllm.claude.run_process")
+    def test_claude_system_none_restores_stock_prompt(self, run, _which):
+        run.return_value = (_completed(json.dumps(CLAUDE_ENVELOPE)), 1.0)
+        ClaudeCLI(system=None).generate("hi")
+        self.assertNotIn("--system-prompt", run.call_args[0][0])
+
+    @mock.patch("devllm.claude.resolve_executable", return_value="claude.CMD")
+    @mock.patch("devllm.claude.run_process")
+    def test_per_call_system_overrides_instance(self, run, _which):
+        run.return_value = (_completed(json.dumps(CLAUDE_ENVELOPE)), 1.0)
+        ClaudeCLI().generate("hi", system="BE A PIRATE")
+        argv = run.call_args[0][0]
+        self.assertIn("BE A PIRATE", argv)
+        self.assertNotIn(DEFAULT_SYSTEM, argv)
+
+
 class TestCodex(unittest.TestCase):
     @staticmethod
     def _writes(text):
@@ -134,6 +169,13 @@ class TestCodex(unittest.TestCase):
     def test_missing_executable(self, _which):
         with self.assertRaises(BackendNotFoundError):
             CodexCLI().generate("hi")
+
+    @mock.patch("devllm.codex.resolve_executable", return_value="codex.CMD")
+    @mock.patch("devllm.codex.run_process")
+    def test_default_system_is_prepended(self, run, _which):
+        run.side_effect = self._writes("ok")
+        CodexCLI().generate("hi")
+        self.assertTrue(run.call_args[0][1].startswith(DEFAULT_SYSTEM))
 
     @mock.patch("devllm.codex.resolve_executable", return_value="codex.CMD")
     @mock.patch("devllm.codex.run_process")

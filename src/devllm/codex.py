@@ -7,6 +7,7 @@ import os
 import tempfile
 
 from .base import (
+    DEFAULT_SYSTEM,
     LLM,
     BackendInvocationError,
     BackendNotFoundError,
@@ -37,7 +38,7 @@ class CodexCLI(LLM):
         self,
         model: str | None = None,
         *,
-        system: str | None = None,
+        system: str | None = DEFAULT_SYSTEM,
         timeout: int = 300,
         reasoning_effort: str | None = "low",
         sandbox: str = "read-only",
@@ -48,7 +49,8 @@ class CodexCLI(LLM):
             model: Model name, or None for the Codex default.
             system: Prepended to the prompt. Codex `exec` has no dedicated
                 system-prompt flag, so this is concatenation, not a real
-                system role.
+                system role. Defaults to a neutral general assistant; pass
+                None to send the prompt alone.
             timeout: Seconds before giving up on the subprocess.
             reasoning_effort: One of none, low, medium, high, xhigh, max.
                 Pass None to leave the CLI's own default in place.

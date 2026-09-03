@@ -10,6 +10,17 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+DEFAULT_SYSTEM = (
+    "You are a helpful, knowledgeable general-purpose assistant. Answer the "
+    "user's question directly and concisely."
+)
+"""Both CLIs ship as *coding* agents. Left with their stock system prompt,
+Claude Code will refuse an ordinary question with "I'm a software engineering
+assistant" -- which makes it useless as a general LLM backend. Replacing the
+system prompt fixes that, and cuts per-call overhead from ~12.5k cached input
+tokens to ~4k as a bonus. Pass `system=None` to restore the CLI's own prompt."""
+
+
 class LLMError(RuntimeError):
     """Base class for every error devllm raises."""
 

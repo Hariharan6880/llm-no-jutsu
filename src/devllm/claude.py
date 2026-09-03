@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from .base import (
+    DEFAULT_SYSTEM,
     LLM,
     BackendInvocationError,
     BackendNotFoundError,
@@ -45,7 +46,7 @@ class ClaudeCLI(LLM):
         self,
         model: str = "sonnet",
         *,
-        system: str | None = None,
+        system: str | None = DEFAULT_SYSTEM,
         timeout: int = 300,
         tools: bool = False,
         extra_args: list[str] | None = None,
@@ -53,8 +54,10 @@ class ClaudeCLI(LLM):
         """
         Args:
             model: An alias (`sonnet`, `opus`, `haiku`) or a full model name.
-            system: Default system prompt. Replacing the stock Claude Code
-                system prompt cuts per-call overhead by roughly 3x.
+            system: Default system prompt. Defaults to a neutral general
+                assistant, because Claude Code's own prompt makes it refuse
+                non-coding questions. Pass None to restore that prompt (and
+                its ~12.5k tokens of per-call overhead).
             timeout: Seconds before giving up on the subprocess.
             tools: Leave False to use Claude purely as a text generator. Set
                 True only if you want it to run its own agent loop, which is
