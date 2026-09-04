@@ -1,19 +1,8 @@
-"""A browser playground for driving the backends by hand.
-
-Standard library only. Run it with `devllm play`.
-"""
+"""The browser smoke-test page. Serving is handled by api.py."""
 
 from __future__ import annotations
 
-import dataclasses
 import json
-import threading
-import webbrowser
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-from .base import LLMError
-from .claude import ClaudeCLI
-from .codex import CodexCLI
 
 DEFAULT_SCHEMA = json.dumps(
     {
@@ -121,12 +110,13 @@ const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'
 $('go').onclick = async () => {
   const body = {
     prompt: $('prompt').value,
-    system: $('system').value.trim(),
     backend: $('backend').value,
     model: $('model').value.trim(),
     reasoning: $('reasoning').value,
-    schema: $('useSchema').checked ? $('schema').value : null,
   };
+  const sys = $('system').value.trim();
+  if (sys) body.system = sys;
+  if ($('useSchema').checked) body.schema = JSON.parse($('schema').value);
   $('go').disabled = true; $('out').innerHTML = '';
   const t0 = Date.now();
   const tick = setInterval(() => {
@@ -138,7 +128,7 @@ $('go').onclick = async () => {
 
   let d;
   try {
-    const r = await fetch('/api/generate',
+    const r = await fetch('/generate',
       {method: 'POST', body: JSON.stringify(body)});
     d = await r.json();
   } catch (err) {
@@ -155,8 +145,6 @@ $('go').onclick = async () => {
 
   let h = '';
   if (d.error) h += '<h3>Error</h3><pre>' + esc(d.error) + '</pre>';
-  if (d.argv && d.argv.length)
-    h += '<h3>Command executed</h3><pre>' + esc(d.argv.join(' ')) + '</pre>';
   if (d.text) h += '<h3>Text</h3><pre>' + esc(d.text) + '</pre>';
   if (d.structured != null)
     h += '<h3>Structured output</h3><pre>'
@@ -167,82 +155,3 @@ $('go').onclick = async () => {
 };
 </script>
 """.replace("__SCHEMA__", DEFAULT_SCHEMA)
-
-
-class _Handler(BaseHTTPRequestHandler):
-    def log_message(self, *args):  # keep the console readable
-        pass
-
-    def _send(self, code: int, ctype: str, payload: bytes) -> None:
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
-
-    def _json(self, obj: dict) -> None:
-        self._send(200, "application/json", json.dumps(obj).encode("utf-8"))
-
-    def do_GET(self):  # noqa: N802 - name required by BaseHTTPRequestHandler
-        if self.path.split("?")[0] != "/":
-            return self._send(404, "text/plain", b"not found")
-        self._send(200, "text/html; charset=utf-8", PAGE.encode("utf-8"))
-
-    def do_POST(self):  # noqa: N802
-        if self.path != "/api/generate":
-            return self._send(404, "text/plain", b"not found")
-
-        length = int(self.headers.get("Content-Length") or 0)
-        req = json.loads(self.rfile.read(length) or b"{}")
-
-        schema = None
-        if req.get("schema"):
-            try:
-                schema = json.loads(req["schema"])
-            except json.JSONDecodeError as exc:
-                return self._json({"ok": False,
-                                   "error": f"schema is not valid JSON: {exc}"})
-
-        model = req.get("model") or None
-        system = req.get("system") or None
-        if req.get("backend") == "codex":
-            llm = CodexCLI(model=model, system=system,
-                           reasoning_effort=req.get("reasoning") or "low")
-        else:
-            llm = ClaudeCLI(model=model or "sonnet", system=system)
-
-        print(f"  -> {llm.name}  schema={schema is not None}  "
-              f"prompt={req.get('prompt', '')[:60]!r}")
-        try:
-            r = llm.generate(req.get("prompt", ""), schema=schema)
-        except LLMError as exc:
-            print(f"  <- FAILED: {exc}")
-            return self._json({"ok": False, "error": str(exc),
-                               "backend": llm.name})
-
-        print(f"  <- ok in {r.duration_s:.1f}s")
-        self._json({
-            "ok": True,
-            "text": r.text,
-            "structured": r.structured,
-            "error": "",
-            "backend": r.backend,
-            "duration_s": r.duration_s,
-            "argv": r.argv,
-            "usage": dataclasses.asdict(r.usage) if r.usage else None,
-        })
-
-
-def serve(port: int = 8765, open_browser: bool = True) -> None:
-    """Start the playground and block until interrupted."""
-    url = f"http://localhost:{port}"
-    print(f"devllm playground -> {url}   (ctrl-c to stop)")
-    if open_browser:
-        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-    server = ThreadingHTTPServer(("127.0.0.1", port), _Handler)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\nstopped")
-    finally:
-        server.server_close()

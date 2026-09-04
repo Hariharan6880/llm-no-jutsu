@@ -6,7 +6,15 @@ import unittest
 from contextlib import contextmanager
 from unittest import mock
 
-from devllm.api import QueueFull, RequestGate, ServerConfig, handle_generate, handle_health
+from devllm.api import (
+    QueueFull,
+    RequestGate,
+    ServerConfig,
+    check_auth,
+    handle_generate,
+    handle_health,
+    make_handler,
+)
 from devllm.base import (
     UNSET,
     BackendInvocationError,
@@ -331,6 +339,34 @@ class TestHandleHealth(unittest.TestCase):
         with mock.patch("devllm.api.ClaudeCLI") as cls:
             handle_health(ServerConfig(backend="claude"), RequestGate())
             cls.return_value.generate.assert_not_called()
+
+
+class TestCheckAuth(unittest.TestCase):
+    def test_no_token_configured_allows_everything(self):
+        self.assertTrue(check_auth(None, None))
+        self.assertTrue(check_auth("Bearer anything", None))
+
+    def test_correct_bearer_token_is_accepted(self):
+        self.assertTrue(check_auth("Bearer s3cret", "s3cret"))
+
+    def test_wrong_or_missing_token_is_rejected(self):
+        self.assertFalse(check_auth("Bearer wrong", "s3cret"))
+        self.assertFalse(check_auth(None, "s3cret"))
+        self.assertFalse(check_auth("s3cret", "s3cret"))  # missing "Bearer "
+
+
+class TestHandlerWiring(unittest.TestCase):
+    """The handler class is built by a factory so config and gate are bound
+    without module-level globals."""
+
+    def test_factory_returns_a_distinct_class_per_config(self):
+        gate = RequestGate()
+        a = make_handler(ServerConfig(port=1), gate)
+        b = make_handler(ServerConfig(port=2), gate)
+        self.assertIsNot(a, b)
+        self.assertEqual(a.config.port, 1)
+        self.assertEqual(b.config.port, 2)
+        self.assertIs(a.gate, gate)
 
 
 if __name__ == "__main__":

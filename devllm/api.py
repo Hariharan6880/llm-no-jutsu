@@ -7,9 +7,12 @@ return `(status, body)`, so the whole surface is testable without sockets.
 from __future__ import annotations
 
 import dataclasses
+import json
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .base import (
     BACKEND_NAMES,
@@ -23,6 +26,7 @@ from .base import (
 from .claude import ClaudeCLI
 from .codex import CodexCLI
 from .doctor import check_backends
+from .playground import PAGE
 
 
 @dataclass
@@ -208,3 +212,108 @@ def handle_health(config: ServerConfig, gate: RequestGate) -> tuple[int, dict]:
             "concurrency": gate.concurrency,
         },
     }
+
+
+def check_auth(header_value: str | None, token: str | None) -> bool:
+    """True when the request may proceed. No token configured means no auth."""
+    if not token:
+        return True
+    if not header_value or not header_value.startswith("Bearer "):
+        return False
+    return header_value[len("Bearer "):] == token
+
+
+def make_handler(config: ServerConfig, gate: RequestGate):
+    """Build a handler class bound to this config and gate."""
+
+    class Handler(BaseHTTPRequestHandler):
+        server_version = "devllm"
+
+        def log_message(self, *args):  # replaced by our own one-line log
+            pass
+
+        def _send(self, status: int, ctype: str, payload: bytes) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def _json(self, status: int, body: dict) -> None:
+            self._send(status, "application/json",
+                       json.dumps(body).encode("utf-8"))
+
+        def _log(self, status: int, started: float, backend: str = "-") -> None:
+            print(f"{time.strftime('%H:%M:%S')}  {self.command} {self.path}  "
+                  f"{backend}  {time.monotonic() - started:.1f}s  {status}")
+
+        def _authorised(self) -> bool:
+            if check_auth(self.headers.get("Authorization"), config.token):
+                return True
+            self._json(401, {"ok": False, "error": "missing or invalid token",
+                             "error_type": "Unauthorized"})
+            return False
+
+        def do_GET(self):  # noqa: N802 - name fixed by BaseHTTPRequestHandler
+            started = time.monotonic()
+            path = self.path.split("?")[0]
+            if path == "/":
+                self._send(200, "text/html; charset=utf-8",
+                           PAGE.encode("utf-8"))
+                return self._log(200, started)
+            if path == "/health":
+                if not self._authorised():
+                    return self._log(401, started)
+                status, body = handle_health(config, gate)
+                self._json(status, body)
+                return self._log(status, started)
+            self._json(404, {"ok": False, "error": f"no route {path}",
+                             "error_type": "NotFound"})
+            self._log(404, started)
+
+        def do_POST(self):  # noqa: N802
+            started = time.monotonic()
+            if self.path.split("?")[0] != "/generate":
+                self._json(404, {"ok": False, "error": "no route",
+                                 "error_type": "NotFound"})
+                return self._log(404, started)
+            if not self._authorised():
+                return self._log(401, started)
+
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                payload = json.loads(self.rfile.read(length) or b"{}")
+            except json.JSONDecodeError as exc:
+                self._json(400, {"ok": False, "error": f"invalid JSON: {exc}",
+                                 "error_type": "BadRequest"})
+                return self._log(400, started)
+            if not isinstance(payload, dict):
+                self._json(400, {"ok": False,
+                                 "error": "body must be a JSON object",
+                                 "error_type": "BadRequest"})
+                return self._log(400, started)
+
+            status, body = handle_generate(payload, config, gate)
+            self._json(status, body)
+            self._log(status, started, body.get("backend", "-"))
+
+    Handler.config = config
+    Handler.gate = gate
+    return Handler
+
+
+def serve(config: ServerConfig) -> None:
+    """Start the server and block until interrupted."""
+    gate = RequestGate(config.concurrency, config.max_queue)
+    server = ThreadingHTTPServer((config.host, config.port),
+                                 make_handler(config, gate))
+    print(f"devllm listening on http://{config.host}:{config.port}")
+    print(f"  POST /generate   GET /health   GET / (browser test page)")
+    if config.backend is None:
+        print(f"  WARNING: {_INSTALL_HINT}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nstopped")
+    finally:
+        server.server_close()
