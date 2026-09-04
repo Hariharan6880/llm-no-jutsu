@@ -143,11 +143,11 @@ Errors return the same envelope with a real HTTP status:
 
 | Condition | Status |
 |---|---|
-| Malformed JSON, missing/empty `prompt`, unknown `backend`, invalid `schema` | 400 |
+| Malformed JSON, missing/empty `prompt`, unknown `backend`, invalid `schema`, `system` that isn't a string or null, `timeout` that isn't a positive integer | 400 |
 | Missing or invalid token when auth is enabled | 401 |
 | Queue full | 429 |
-| CLI ran but failed, or returned unparseable output | 502 |
-| CLI not installed or not logged in | 503 |
+| CLI ran but failed (including not logged in), or returned unparseable output | 502 |
+| CLI not installed | 503 |
 | Request timed out | 504 |
 
 Status codes are load-bearing: callers will use `raise_for_status()` and `response.ok`, and a 200 carrying an error body would break them.
@@ -170,7 +170,7 @@ Status codes are load-bearing: callers will use `raise_for_status()` and `respon
 
 ### `GET /`
 
-Serves a browser playground: prompt, system prompt, model, and an optional JSON schema. Its purpose is narrow — it exists so a new user can confirm the server actually answers *before* touching their own code, the difference between "my integration is broken" and "my CLI was never logged in". It's a smoke-test surface, not a product surface.
+Serves a browser playground: prompt, system prompt, model, a backend selector, a reasoning (codex) dropdown, and an optional JSON schema. Its purpose is narrow — it exists so a new user can confirm the server actually answers *before* touching their own code, the difference between "my integration is broken" and "my CLI was never logged in". It's a smoke-test surface, not a product surface.
 
 ---
 
