@@ -43,7 +43,7 @@ class RequestGate:
         self.max_queue = max_queue
         self.active = 0
         self.waiting = 0
-        self._semaphore = threading.Semaphore(concurrency)
+        self._semaphore = threading.BoundedSemaphore(concurrency)
         self._lock = threading.Lock()
 
     @contextmanager

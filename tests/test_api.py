@@ -1,6 +1,7 @@
 """Offline tests for the HTTP layer. No sockets, no CLI, no network."""
 
 import threading
+import time
 import unittest
 
 from devllm.api import QueueFull, RequestGate, ServerConfig
@@ -25,6 +26,41 @@ class TestRequestGate(unittest.TestCase):
             self.assertEqual(gate.active, 1)
         self.assertEqual(gate.active, 0)
 
+    def test_released_permit_is_recycled(self):
+        # The gate's central promise: a permit freed by one holder must
+        # become available to the next waiter, not stay leaked.
+        gate = RequestGate(concurrency=1, max_queue=8)
+        started = threading.Event()
+        release = threading.Event()
+        admitted = threading.Event()
+
+        def hold():
+            with gate.slot():
+                started.set()
+                release.wait(5)
+
+        def wait_for_slot():
+            with gate.slot():
+                admitted.set()
+
+        holder = threading.Thread(target=hold, daemon=True)
+        holder.start()
+        self.assertTrue(started.wait(5), "holder never entered its slot")
+
+        waiter = threading.Thread(target=wait_for_slot, daemon=True)
+        waiter.start()
+
+        release.set()
+        holder.join(5)
+        self.assertFalse(holder.is_alive(), "holder thread never finished")
+
+        self.assertTrue(
+            admitted.wait(5),
+            "waiter was never admitted; released permit was not recycled",
+        )
+        waiter.join(5)
+        self.assertFalse(waiter.is_alive(), "waiter thread never finished")
+
     def test_rejects_when_queue_is_full(self):
         gate = RequestGate(concurrency=1, max_queue=1)
         started = threading.Event()
@@ -37,7 +73,7 @@ class TestRequestGate(unittest.TestCase):
 
         holder = threading.Thread(target=hold, daemon=True)
         holder.start()
-        started.wait(5)
+        self.assertTrue(started.wait(5), "holder never entered its slot")
 
         # One waiter fills the queue; the next must be rejected.
         waiter = threading.Thread(target=lambda: self._try_slot(gate), daemon=True)
@@ -50,7 +86,9 @@ class TestRequestGate(unittest.TestCase):
 
         release.set()
         holder.join(5)
+        self.assertFalse(holder.is_alive(), "holder thread never finished")
         waiter.join(5)
+        self.assertFalse(waiter.is_alive(), "waiter thread never finished")
 
     @staticmethod
     def _try_slot(gate):
@@ -62,10 +100,11 @@ class TestRequestGate(unittest.TestCase):
 
     @staticmethod
     def _wait_until(predicate, timeout=5.0):
-        deadline = __import__("time").monotonic() + timeout
-        while __import__("time").monotonic() < deadline:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
             if predicate():
                 return
+            time.sleep(0.005)
         raise AssertionError("condition not reached in time")
 
 
