@@ -22,6 +22,7 @@ from .base import (
 )
 from .claude import ClaudeCLI
 from .codex import CodexCLI
+from .doctor import check_backends
 
 
 @dataclass
@@ -186,4 +187,24 @@ def handle_generate(payload: dict, config: ServerConfig,
         "model": response.model,
         "duration_s": round(response.duration_s, 2),
         "usage": dataclasses.asdict(response.usage) if response.usage else None,
+    }
+
+
+def handle_health(config: ServerConfig, gate: RequestGate) -> tuple[int, dict]:
+    """GET /health. Always 200 — an unconfigured server is still a running one.
+
+    Lets a first-time user tell "server is down" from "server is up but no CLI
+    is logged in", which is the more common problem. Performs no model call.
+    """
+    backends = check_backends()
+    installed = any(state["installed"] for state in backends.values())
+    return 200, {
+        "status": "ok" if installed else "unconfigured",
+        "backends": backends,
+        "default_backend": config.backend,
+        "queue": {
+            "active": gate.active,
+            "waiting": gate.waiting,
+            "concurrency": gate.concurrency,
+        },
     }

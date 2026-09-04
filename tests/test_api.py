@@ -6,7 +6,7 @@ import unittest
 from contextlib import contextmanager
 from unittest import mock
 
-from devllm.api import QueueFull, RequestGate, ServerConfig, handle_generate
+from devllm.api import QueueFull, RequestGate, ServerConfig, handle_generate, handle_health
 from devllm.base import (
     UNSET,
     BackendInvocationError,
@@ -286,6 +286,51 @@ class TestQueueFullIs429(unittest.TestCase):
                                        FullGate())
         self.assertEqual(status, 429)
         self.assertEqual(body["error_type"], "QueueFull")
+
+
+class TestHandleHealth(unittest.TestCase):
+    _INSTALLED = {
+        "claude": {"installed": True, "path": "/x/claude",
+                   "login": "subscription: pro"},
+        "codex": {"installed": False, "path": None, "login": "not installed"},
+    }
+    _NONE = {
+        "claude": {"installed": False, "path": None, "login": "not installed"},
+        "codex": {"installed": False, "path": None, "login": "not installed"},
+    }
+
+    @mock.patch("devllm.api.check_backends")
+    def test_ok_when_a_backend_is_installed(self, check):
+        check.return_value = self._INSTALLED
+        status, body = handle_health(ServerConfig(backend="claude"),
+                                     RequestGate())
+        self.assertEqual(status, 200)
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(body["default_backend"], "claude")
+        self.assertTrue(body["backends"]["claude"]["installed"])
+
+    @mock.patch("devllm.api.check_backends")
+    def test_unconfigured_when_nothing_is_installed(self, check):
+        check.return_value = self._NONE
+        status, body = handle_health(ServerConfig(backend=None), RequestGate())
+        self.assertEqual(status, 200)
+        self.assertEqual(body["status"], "unconfigured")
+        self.assertIsNone(body["default_backend"])
+
+    @mock.patch("devllm.api.check_backends")
+    def test_reports_queue_state(self, check):
+        check.return_value = self._INSTALLED
+        _, body = handle_health(ServerConfig(backend="claude"),
+                                RequestGate(concurrency=3, max_queue=8))
+        self.assertEqual(body["queue"],
+                         {"active": 0, "waiting": 0, "concurrency": 3})
+
+    @mock.patch("devllm.api.check_backends")
+    def test_makes_no_live_call(self, check):
+        check.return_value = self._INSTALLED
+        with mock.patch("devllm.api.ClaudeCLI") as cls:
+            handle_health(ServerConfig(backend="claude"), RequestGate())
+            cls.return_value.generate.assert_not_called()
 
 
 if __name__ == "__main__":
