@@ -30,9 +30,9 @@ SCHEMA = {
 class TestClaudeLive(unittest.TestCase):
     def test_plain_text_call(self):
         r = ClaudeCLI().generate(PROMPT)
-        self.assertIn("ok", r.text.lower())
+        self.assertRegex(r.text.strip().lower(), r"^\W*\bok\b")
         self.assertGreater(r.duration_s, 0)
-        self.assertIsNotNone(r.usage)
+        self.assertGreater(r.usage.total_input, 0)
 
     def test_schema_call_returns_parsed_structure(self):
         r = ClaudeCLI().generate("Return the word ok.", schema=SCHEMA)
@@ -41,7 +41,9 @@ class TestClaudeLive(unittest.TestCase):
 
     def test_answers_a_non_coding_question(self):
         # Regression: with its stock system prompt Claude Code refuses
-        # ordinary questions as "not something I can help with".
+        # ordinary questions as "not something I can help with". This targets
+        # that one documented refusal phrase only -- it is not a general
+        # refusal detector.
         r = ClaudeCLI().generate("Name one phone brand sold in India. "
                                  "Reply with the brand name only.")
         self.assertGreater(len(r.text.strip()), 0)
@@ -52,7 +54,7 @@ class TestClaudeLive(unittest.TestCase):
 class TestCodexLive(unittest.TestCase):
     def test_plain_text_call(self):
         r = CodexCLI().generate(PROMPT)
-        self.assertIn("ok", r.text.lower())
+        self.assertRegex(r.text.strip().lower(), r"^\W*\bok\b")
 
     def test_schema_call_returns_parsed_structure(self):
         r = CodexCLI().generate("Return the word ok.", schema=SCHEMA)
@@ -69,7 +71,7 @@ class TestEndpointLive(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         self.assertTrue(body["ok"])
-        self.assertIn("ok", body["text"].lower())
+        self.assertRegex(body["text"].strip().lower(), r"^\W*\bok\b")
 
 
 if __name__ == "__main__":
