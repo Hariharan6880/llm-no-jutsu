@@ -14,8 +14,10 @@ from __future__ import annotations
 import os
 
 from .base import (
+    BACKEND_NAMES,
     DEFAULT_SYSTEM,
     LLM,
+    UNSET,
     BackendInvocationError,
     BackendNotFoundError,
     BackendTimeoutError,
@@ -32,6 +34,8 @@ __version__ = "0.1.0"
 __all__ = [
     "LLM",
     "DEFAULT_SYSTEM",
+    "UNSET",
+    "BACKEND_NAMES",
     "LLMResponse",
     "Usage",
     "ClaudeCLI",

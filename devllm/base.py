@@ -21,6 +21,30 @@ system prompt fixes that, and cuts per-call overhead from ~12.5k cached input
 tokens to ~4k as a bonus. Pass `system=None` to restore the CLI's own prompt."""
 
 
+class _Unset:
+    """Sentinel meaning "the caller said nothing", distinct from an explicit
+    None. Needed because None is a meaningful value for `system`: it means
+    "send no system prompt at all"."""
+
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:
+        return "UNSET"
+
+    def __bool__(self) -> bool:
+        return False
+
+
+UNSET = _Unset()
+
+BACKEND_NAMES = ("claude", "codex")
+
+
 class LLMError(RuntimeError):
     """Base class for every error devllm raises."""
 
@@ -94,6 +118,7 @@ class LLM(ABC):
     """
 
     name: str = "llm"
+    executable: str = ""
 
     @abstractmethod
     def generate(
@@ -101,7 +126,7 @@ class LLM(ABC):
         prompt: str,
         *,
         schema: dict | None = None,
-        system: str | None = None,
+        system: str | None | _Unset = UNSET,
     ) -> LLMResponse:
         """Send `prompt`, block until the model finishes, return the response.
 
@@ -117,11 +142,9 @@ class LLM(ABC):
 
     def available(self) -> bool:
         """True if this backend's CLI is installed and on PATH."""
+        if not self.executable:
+            return False
         return resolve_executable(self.executable) is not None
-
-    @property
-    def executable(self) -> str:
-        raise NotImplementedError
 
 
 def resolve_executable(name: str) -> str | None:

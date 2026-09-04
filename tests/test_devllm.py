@@ -9,10 +9,12 @@ import unittest
 from unittest import mock
 
 from devllm import (
+    LLM,
     BackendNotFoundError,
     ClaudeCLI,
     CodexCLI,
     OutputParseError,
+    UNSET,
     get_backend,
 )
 from devllm.base import (
@@ -140,6 +142,9 @@ class TestDefaultSystemPrompt(unittest.TestCase):
     @mock.patch("devllm.claude.resolve_executable", return_value="claude.CMD")
     @mock.patch("devllm.claude.run_process")
     def test_claude_system_none_restores_stock_prompt(self, run, _which):
+        # system=None means "send no system prompt at all", which is what
+        # restores Claude Code's own stock prompt -- it is not a synonym for
+        # "use the instance default".
         run.return_value = (_completed(json.dumps(CLAUDE_ENVELOPE)), 1.0)
         ClaudeCLI(system=None).generate("hi")
         self.assertNotIn("--system-prompt", run.call_args[0][0])
@@ -205,6 +210,48 @@ class TestCodex(unittest.TestCase):
         run.side_effect = self._writes("ok")
         CodexCLI(system="BE TERSE").generate("hi")
         self.assertTrue(run.call_args[0][1].startswith("BE TERSE"))
+
+
+class TestUnsetSentinel(unittest.TestCase):
+    """`None` and "unset" must be distinguishable: the HTTP API gives
+    `"system": null` the meaning "no system prompt", which the old
+    None-means-default behaviour made impossible to express."""
+
+    @mock.patch("devllm.claude.resolve_executable", return_value="claude.CMD")
+    @mock.patch("devllm.claude.run_process")
+    def test_constructor_none_suppresses_system_prompt(self, run, _which):
+        run.return_value = (_completed(json.dumps(CLAUDE_ENVELOPE)), 1.0)
+        ClaudeCLI(system=None).generate("hi")
+        self.assertNotIn("--system-prompt", run.call_args[0][0])
+
+    @mock.patch("devllm.claude.resolve_executable", return_value="claude.CMD")
+    @mock.patch("devllm.claude.run_process")
+    def test_per_call_none_suppresses_system_prompt(self, run, _which):
+        run.return_value = (_completed(json.dumps(CLAUDE_ENVELOPE)), 1.0)
+        ClaudeCLI().generate("hi", system=None)
+        self.assertNotIn("--system-prompt", run.call_args[0][0])
+
+    @mock.patch("devllm.claude.resolve_executable", return_value="claude.CMD")
+    @mock.patch("devllm.claude.run_process")
+    def test_omitted_uses_instance_default(self, run, _which):
+        run.return_value = (_completed(json.dumps(CLAUDE_ENVELOPE)), 1.0)
+        ClaudeCLI(system="INSTANCE").generate("hi")
+        self.assertIn("INSTANCE", run.call_args[0][0])
+
+    @mock.patch("devllm.codex.resolve_executable", return_value="codex.CMD")
+    @mock.patch("devllm.codex.run_process")
+    def test_codex_none_sends_bare_prompt(self, run, _which):
+        run.side_effect = TestCodex._writes("ok")
+        CodexCLI(system=None).generate("hi")
+        self.assertEqual(run.call_args[0][1], "hi")
+
+    def test_executable_is_a_plain_attribute(self):
+        # A subclass that is not a subprocess must not explode on available().
+        class Fake(LLM):
+            name = "fake"
+            def generate(self, prompt, *, schema=None, system=UNSET):
+                raise NotImplementedError
+        self.assertFalse(Fake().available())
 
 
 class TestRunProcess(unittest.TestCase):

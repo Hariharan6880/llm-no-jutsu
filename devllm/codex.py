@@ -9,10 +9,12 @@ import tempfile
 from .base import (
     DEFAULT_SYSTEM,
     LLM,
+    UNSET,
     BackendInvocationError,
     BackendNotFoundError,
     LLMResponse,
     OutputParseError,
+    _Unset,
     resolve_executable,
     run_process,
 )
@@ -38,7 +40,7 @@ class CodexCLI(LLM):
         self,
         model: str | None = None,
         *,
-        system: str | None = DEFAULT_SYSTEM,
+        system: str | None | _Unset = UNSET,
         timeout: int = 300,
         reasoning_effort: str | None = "low",
         sandbox: str = "read-only",
@@ -59,7 +61,7 @@ class CodexCLI(LLM):
             extra_args: Raw flags appended to the command.
         """
         self.model = model
-        self.system = system
+        self.system = DEFAULT_SYSTEM if system is UNSET else system
         self.timeout = timeout
         self.reasoning_effort = reasoning_effort
         self.sandbox = sandbox
@@ -70,7 +72,7 @@ class CodexCLI(LLM):
         prompt: str,
         *,
         schema: dict | None = None,
-        system: str | None = None,
+        system: str | None | _Unset = UNSET,
     ) -> LLMResponse:
         exe = resolve_executable(self.executable)
         if exe is None:
@@ -103,7 +105,7 @@ class CodexCLI(LLM):
         argv += self.extra_args
         argv.append("-")  # read the prompt from stdin
 
-        active_system = system if system is not None else self.system
+        active_system = self.system if system is UNSET else system
         full_prompt = f"{active_system}\n\n{prompt}" if active_system else prompt
 
         result, elapsed = run_process(argv, full_prompt, self.timeout, self.name)

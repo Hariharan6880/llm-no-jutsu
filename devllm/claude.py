@@ -7,11 +7,13 @@ import json
 from .base import (
     DEFAULT_SYSTEM,
     LLM,
+    UNSET,
     BackendInvocationError,
     BackendNotFoundError,
     LLMResponse,
     OutputParseError,
     Usage,
+    _Unset,
     resolve_executable,
     run_process,
 )
@@ -46,7 +48,7 @@ class ClaudeCLI(LLM):
         self,
         model: str = "sonnet",
         *,
-        system: str | None = DEFAULT_SYSTEM,
+        system: str | None | _Unset = UNSET,
         timeout: int = 300,
         tools: bool = False,
         extra_args: list[str] | None = None,
@@ -56,8 +58,9 @@ class ClaudeCLI(LLM):
             model: An alias (`sonnet`, `opus`, `haiku`) or a full model name.
             system: Default system prompt. Defaults to a neutral general
                 assistant, because Claude Code's own prompt makes it refuse
-                non-coding questions. Pass None to restore that prompt (and
-                its ~12.5k tokens of per-call overhead).
+                non-coding questions. Pass None to send no system prompt at
+                all, which restores Claude Code's own stock prompt (and its
+                ~12.5k tokens of per-call overhead).
             timeout: Seconds before giving up on the subprocess.
             tools: Leave False to use Claude purely as a text generator. Set
                 True only if you want it to run its own agent loop, which is
@@ -66,7 +69,7 @@ class ClaudeCLI(LLM):
                 wrapper does not expose.
         """
         self.model = model
-        self.system = system
+        self.system = DEFAULT_SYSTEM if system is UNSET else system
         self.timeout = timeout
         self.tools = tools
         self.extra_args = extra_args or []
@@ -76,7 +79,7 @@ class ClaudeCLI(LLM):
         prompt: str,
         *,
         schema: dict | None = None,
-        system: str | None = None,
+        system: str | None | _Unset = UNSET,
     ) -> LLMResponse:
         exe = resolve_executable(self.executable)
         if exe is None:
@@ -94,7 +97,7 @@ class ClaudeCLI(LLM):
         ]
         if not self.tools:
             argv += ["--disallowedTools", *_AGENT_TOOLS]
-        active_system = system if system is not None else self.system
+        active_system = self.system if system is UNSET else system
         if active_system:
             argv += ["--system-prompt", active_system]
         if schema is not None:
