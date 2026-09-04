@@ -41,7 +41,6 @@ def _codex_login() -> str:
     return "logged in"
 
 
-_LOGIN_CHECKS = {"claude": _claude_login, "codex": _codex_login}
 _INSTALL_HINTS = {
     "claude": "npm install -g @anthropic-ai/claude-code   then run `claude`",
     "codex": "npm install -g @openai/codex               then `codex login`",
@@ -50,13 +49,16 @@ _INSTALL_HINTS = {
 
 def check_backends() -> dict[str, dict]:
     """Installed/login state for every backend. Performs no model call."""
+    # Resolved per call, not at import: a module-level dict would capture
+    # the function objects and make mock.patch on them silently useless.
+    login_checks = {"claude": _claude_login, "codex": _codex_login}
     report: dict[str, dict] = {}
     for name in BACKEND_NAMES:
         path = resolve_executable(name)
         report[name] = {
             "installed": path is not None,
             "path": path,
-            "login": _LOGIN_CHECKS[name]() if path else "not installed",
+            "login": login_checks[name]() if path else "not installed",
         }
     return report
 
