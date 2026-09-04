@@ -1,9 +1,18 @@
-"""Offline tests for the HTTP layer. No sockets, no CLI, no network."""
+"""Offline tests for the HTTP layer. No CLI and no network.
 
+Most of these call the `handle_*` functions directly. `TestHandlerOverHTTP`
+does use a real loopback socket, because routing, auth and Content-Type
+enforcement live in the handler and a pure-function test never executes them.
+"""
+
+import json
 import threading
 import time
 import unittest
+import urllib.error
+import urllib.request
 from contextlib import contextmanager
+from http.server import ThreadingHTTPServer
 from unittest import mock
 
 from devllm.api import (
@@ -14,6 +23,7 @@ from devllm.api import (
     handle_generate,
     handle_health,
     make_handler,
+    resolve_default_backend,
 )
 from devllm.base import (
     UNSET,
@@ -234,6 +244,19 @@ class TestHandleGenerateValidation(unittest.TestCase):
                                     self.config, self.gate)
         self.assertEqual(status, 400)
 
+    def test_string_timeout_is_400(self):
+        # JSON has no integer type discipline, so "300" arrives routinely.
+        status, body = handle_generate({"prompt": "hi", "timeout": "300"},
+                                       self.config, self.gate)
+        self.assertEqual(status, 400)
+        self.assertIn("timeout", body["error"])
+
+    def test_negative_timeout_is_400(self):
+        status, body = handle_generate({"prompt": "hi", "timeout": -5},
+                                       self.config, self.gate)
+        self.assertEqual(status, 400)
+        self.assertIn("timeout", body["error"])
+
     def test_no_backend_configured_is_503(self):
         status, body = handle_generate({"prompt": "hi"},
                                        ServerConfig(backend=None), self.gate)
@@ -355,6 +378,28 @@ class TestCheckAuth(unittest.TestCase):
         self.assertFalse(check_auth("s3cret", "s3cret"))  # missing "Bearer "
 
 
+class TestResolveDefaultBackend(unittest.TestCase):
+    """Decides what a bare `python server.py` uses, and the README promises
+    an order. Note the patch target: `resolve_default_backend` reaches
+    `resolve_executable` through `LLM.available()` in devllm.base, so patching
+    `devllm.api.resolve_executable` would bind nothing and pass silently."""
+
+    def test_prefers_claude_when_both_installed(self):
+        with mock.patch("devllm.base.resolve_executable",
+                        return_value="/x/cli"):
+            self.assertEqual(resolve_default_backend(), "claude")
+
+    def test_falls_back_to_codex(self):
+        with mock.patch("devllm.base.resolve_executable",
+                        side_effect=lambda n: "/x/codex" if n == "codex"
+                        else None):
+            self.assertEqual(resolve_default_backend(), "codex")
+
+    def test_none_when_nothing_installed(self):
+        with mock.patch("devllm.base.resolve_executable", return_value=None):
+            self.assertIsNone(resolve_default_backend())
+
+
 class TestHandlerWiring(unittest.TestCase):
     """The handler class is built by a factory so config and gate are bound
     without module-level globals."""
@@ -367,6 +412,166 @@ class TestHandlerWiring(unittest.TestCase):
         self.assertEqual(a.config.port, 1)
         self.assertEqual(b.config.port, 2)
         self.assertIs(a.gate, gate)
+
+
+class _LiveServerCase(unittest.TestCase):
+    """Runs the real handler on a loopback port with `handle_generate` mocked.
+
+    Everything inside `make_handler` -- the auth gate, the route table, the
+    Content-Type check, body parsing -- is reachable only through a socket.
+    Deleting the auth call from `do_POST` used to leave the whole suite green;
+    these tests are what makes that go red.
+    """
+
+    token: str | None = None
+
+    def setUp(self):
+        patcher = mock.patch(
+            "devllm.api.handle_generate",
+            return_value=(200, {"ok": True, "text": "an answer",
+                                "structured": None, "backend": "claude"}),
+        )
+        self.generate = patcher.start()
+        self.addCleanup(patcher.stop)
+
+        # The handler prints one access-log line per request.
+        quiet = mock.patch("builtins.print")
+        quiet.start()
+        self.addCleanup(quiet.stop)
+
+        config = ServerConfig(backend="claude", token=self.token)
+        self.server = ThreadingHTTPServer(
+            ("127.0.0.1", 0), make_handler(config, RequestGate()))
+        self.port = self.server.server_address[1]
+        self.thread = threading.Thread(target=self.server.serve_forever,
+                                       daemon=True)
+        self.thread.start()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(5)
+        self.assertFalse(self.thread.is_alive(),
+                         "server thread outlived the test")
+
+    def request(self, method="POST", path="/generate", body=b'{"prompt":"hi"}',
+                headers=None):
+        """Returns (status, raw_body, headers). 4xx/5xx do not raise."""
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}", data=body, method=method)
+        for key, value in (headers or {}).items():
+            request.add_header(key, value)
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return response.status, response.read(), response.headers
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read(), exc.headers
+
+    JSON = {"Content-Type": "application/json"}
+
+
+class TestHandlerOverHTTP(_LiveServerCase):
+    """No token configured."""
+
+    def test_post_generate_returns_200(self):
+        status, body, headers = self.request(headers=self.JSON)
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "application/json")
+        self.assertTrue(json.loads(body)["ok"])
+        self.generate.assert_called_once()
+
+    def test_get_root_serves_html(self):
+        status, body, headers = self.request(method="GET", path="/", body=None)
+        self.assertEqual(status, 200)
+        self.assertIn("text/html", headers["Content-Type"])
+        self.assertIn(b"<!doctype html>", body)
+
+    def test_unknown_get_path_is_404_json(self):
+        status, body, _ = self.request(method="GET", path="/nope", body=None)
+        self.assertEqual(status, 404)
+        payload = json.loads(body)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error_type"], "NotFound")
+
+    def test_unknown_post_path_is_404_json(self):
+        status, body, _ = self.request(path="/nope", headers=self.JSON)
+        self.assertEqual(status, 404)
+        self.assertEqual(json.loads(body)["error_type"], "NotFound")
+        self.generate.assert_not_called()
+
+    def test_malformed_json_is_400(self):
+        status, body, _ = self.request(body=b"{not json", headers=self.JSON)
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)["error_type"], "BadRequest")
+        self.generate.assert_not_called()
+
+    def test_non_object_body_is_400(self):
+        status, body, _ = self.request(body=b'["hi"]', headers=self.JSON)
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)["error_type"], "BadRequest")
+
+    def test_text_plain_content_type_is_415(self):
+        # The drive-by POST: text/plain is a CORS simple request, so a browser
+        # sends it cross-origin with no preflight. Rejecting it is what stops
+        # any open page from spending the user's subscription.
+        status, body, _ = self.request(
+            headers={"Content-Type": "text/plain;charset=UTF-8"})
+        self.assertEqual(status, 415)
+        self.assertEqual(json.loads(body)["error_type"],
+                         "UnsupportedMediaType")
+        self.generate.assert_not_called()
+
+    def test_missing_content_type_is_415(self):
+        status, _, _ = self.request()
+        self.assertEqual(status, 415)
+        self.generate.assert_not_called()
+
+    def test_charset_parameter_is_accepted(self):
+        status, _, _ = self.request(
+            headers={"Content-Type": "application/json; charset=utf-8"})
+        self.assertEqual(status, 200)
+
+    def test_header_name_case_does_not_matter(self):
+        # examples/curl.sh sends a lowercase `content-type`. HTTP header
+        # names are case-insensitive and the 415 check must honour that.
+        status, _, _ = self.request(
+            headers={"content-type": "application/json"})
+        self.assertEqual(status, 200)
+
+
+class TestHandlerAuthOverHTTP(_LiveServerCase):
+    """A token is configured, so /generate and /health must enforce it."""
+
+    token = "s3cret"
+
+    def test_no_authorization_header_is_401(self):
+        status, body, _ = self.request(headers=self.JSON)
+        self.assertEqual(status, 401)
+        self.assertEqual(json.loads(body)["error_type"], "Unauthorized")
+        self.generate.assert_not_called()
+
+    def test_wrong_token_is_401(self):
+        status, _, _ = self.request(
+            headers={**self.JSON, "Authorization": "Bearer wrong"})
+        self.assertEqual(status, 401)
+        self.generate.assert_not_called()
+
+    def test_correct_bearer_token_is_200(self):
+        status, body, _ = self.request(
+            headers={**self.JSON, "Authorization": "Bearer s3cret"})
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["ok"])
+        self.generate.assert_called_once()
+
+    def test_health_is_gated_too(self):
+        status, _, _ = self.request(method="GET", path="/health", body=None)
+        self.assertEqual(status, 401)
+
+    def test_root_page_is_not_gated(self):
+        # Deliberate: the page is how a new user proves the server answers.
+        # Its own fetch cannot authenticate, which the README warns about.
+        status, _, _ = self.request(method="GET", path="/", body=None)
+        self.assertEqual(status, 200)
 
 
 if __name__ == "__main__":

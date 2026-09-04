@@ -64,18 +64,25 @@ def check_backends() -> dict[str, dict]:
 
 
 def run_doctor(live: bool = True) -> bool:
-    """Print a report. Returns True if at least one backend is installed.
+    """Print a report. Returns True when the environment is actually usable.
 
     Args:
         live: Also send a real one-word prompt to each installed backend.
-              Costs a few tokens and 10-30 seconds, but it is the only check
-              that proves the whole path actually works.
+              Costs a few tokens and 10-30 seconds per backend, but it is the
+              only check that proves the whole path actually works.
+
+    Returns:
+        True when at least one backend is installed and no live call failed.
+        A failed live call must not report success: this value becomes
+        `--check`'s exit code, and an installed-but-logged-out CLI is exactly
+        the state the command exists to catch.
     """
     classes = {"claude": ClaudeCLI, "codex": CodexCLI}
     report = check_backends()
 
     print("devllm check\n" + "-" * 52)
     any_installed = False
+    live_failed = False
 
     for name, state in report.items():
         if not state["installed"]:
@@ -89,6 +96,7 @@ def run_doctor(live: bool = True) -> bool:
             try:
                 response = classes[name]().generate(_PROMPT)
             except LLMError as exc:
+                live_failed = True
                 print(f"  {'':8s} live call FAILED: {exc}")
             else:
                 print(f"  {'':8s} live call OK in {response.duration_s:.1f}s "
@@ -96,10 +104,13 @@ def run_doctor(live: bool = True) -> bool:
         print()
 
     print("-" * 52)
-    if any_installed:
-        print("At least one backend is installed. You are good to go.")
-    else:
+    if not any_installed:
         print("No backend installed. Install one:")
         for hint in _INSTALL_HINTS.values():
             print(f"  {hint}")
-    return any_installed
+    elif live_failed:
+        print("A backend is installed but its live call FAILED. Check the "
+              "login state above; the server will return 502 until it works.")
+    else:
+        print("At least one backend is installed. You are good to go.")
+    return any_installed and not live_failed

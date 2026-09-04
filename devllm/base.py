@@ -185,6 +185,6 @@ def run_process(
     except subprocess.TimeoutExpired as exc:
         raise BackendTimeoutError(
             f"{backend} did not respond within {timeout}s. Cold CLI processes "
-            f"take 10-40s; raise `timeout=` if your prompts are long."
+            f"take 10-40s; send a larger `timeout` if your prompts are long."
         ) from exc
     return result, time.monotonic() - started

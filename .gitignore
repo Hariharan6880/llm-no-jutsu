@@ -8,3 +8,10 @@ venv/
 .env
 .pytest_cache/
 .DS_Store
+*.log
+
+# Planning workspace. Kept out of the repo deliberately -- .git/info/exclude
+# is local-only, so a clone or a `git add -A` from another machine would
+# otherwise publish all of it.
+docs/
+.superpowers/

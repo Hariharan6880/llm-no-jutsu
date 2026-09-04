@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 
 from .base import (
@@ -81,7 +82,24 @@ class CodexCLI(LLM):
                 "`npm install -g @openai/codex`, then run `codex login`."
             )
 
+        # Both the -o answer file and the schema file live in here. This runs
+        # inside a long-lived server, so it is removed on every path -- one
+        # leaked directory per request would otherwise accumulate forever.
         workdir = tempfile.mkdtemp(prefix="devllm_codex_")
+        try:
+            return self._run(prompt, schema, system, exe, workdir)
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+    def _run(
+        self,
+        prompt: str,
+        schema: dict | None,
+        system: str | None | _Unset,
+        exe: str,
+        workdir: str,
+    ) -> LLMResponse:
+        """The body of `generate`, split out so `workdir` has one owner."""
         last_message = os.path.join(workdir, "last.txt")
 
         # Codex writes a human transcript to stdout (banner, token counts, log
@@ -116,6 +134,8 @@ class CodexCLI(LLM):
                 f"{(result.stderr or result.stdout)[-800:].strip()}"
             )
 
+        # Read into memory before returning: the caller deletes the directory
+        # this file lives in.
         with open(last_message, encoding="utf-8") as handle:
             text = handle.read().strip()
 

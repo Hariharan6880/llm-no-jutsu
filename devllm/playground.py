@@ -138,8 +138,13 @@ $('go').onclick = async () => {
 
   let d;
   try {
-    const r = await fetch('/generate',
-      {method: 'POST', body: JSON.stringify(body)});
+    // The Content-Type is required: the server rejects anything else with a
+    // 415, which is what stops a drive-by POST from another origin.
+    const r = await fetch('/generate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
     d = await r.json();
   } catch (err) {
     d = {ok: false, error: String(err), duration_s: (Date.now() - t0) / 1000};

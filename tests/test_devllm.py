@@ -8,20 +8,17 @@ import subprocess
 import unittest
 from unittest import mock
 
-from devllm import (
-    LLM,
-    BackendNotFoundError,
-    ClaudeCLI,
-    CodexCLI,
-    OutputParseError,
-    UNSET,
-    get_backend,
-)
 from devllm.base import (
     DEFAULT_SYSTEM,
+    LLM,
+    UNSET,
     BackendInvocationError,
+    BackendNotFoundError,
     BackendTimeoutError,
+    OutputParseError,
 )
+from devllm.claude import ClaudeCLI
+from devllm.codex import CodexCLI
 
 
 def _completed(stdout="", returncode=0, stderr=""):
@@ -42,24 +39,6 @@ CLAUDE_ENVELOPE = {
         "cache_creation_input_tokens": 720,
     },
 }
-
-
-class TestFactory(unittest.TestCase):
-    def test_named_backends(self):
-        self.assertIsInstance(get_backend("claude"), ClaudeCLI)
-        self.assertIsInstance(get_backend("codex"), CodexCLI)
-
-    def test_defaults_to_claude(self):
-        with mock.patch.dict("os.environ", {}, clear=True):
-            self.assertIsInstance(get_backend(), ClaudeCLI)
-
-    def test_env_var_selects_backend(self):
-        with mock.patch.dict("os.environ", {"DEVLLM_BACKEND": "codex"}):
-            self.assertIsInstance(get_backend(), CodexCLI)
-
-    def test_unknown_backend_is_rejected(self):
-        with self.assertRaises(ValueError):
-            get_backend("gpt-9")
 
 
 class TestClaude(unittest.TestCase):

@@ -4,9 +4,20 @@ Start the server first:  python server.py
 """
 
 import json
+import urllib.error
 import urllib.request
 
 URL = "http://localhost:8765/generate"
+
+
+def explain(exc: urllib.error.HTTPError) -> str:
+    """urlopen raises on 4xx/5xx. The body is the server's JSON error
+    envelope, which is worth far more to you than a traceback."""
+    body = exc.read().decode("utf-8", "replace")
+    try:
+        return f"server returned {exc.code}: {json.loads(body)['error']}"
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return f"server returned {exc.code}: {body[:500]}"
 
 
 def generate(prompt: str, **options) -> dict:
@@ -21,6 +32,9 @@ def generate(prompt: str, **options) -> dict:
 
 
 if __name__ == "__main__":
-    result = generate("Recommend one phone under 50000 INR. One sentence.")
+    try:
+        result = generate("Recommend one phone under 50000 INR. One sentence.")
+    except urllib.error.HTTPError as exc:
+        raise SystemExit(explain(exc))
     print(result["text"])
     print(f"\n[{result['backend']} in {result['duration_s']}s]")

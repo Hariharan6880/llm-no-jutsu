@@ -8,6 +8,7 @@ Start the server first:  python server.py
 """
 
 import json
+import urllib.error
 import urllib.request
 
 URL = "http://localhost:8765/generate"
@@ -54,7 +55,13 @@ def run(question: str, max_steps: int = 4) -> str:
             schema=DECISION_SCHEMA,
             system=SYSTEM,
         )
-        decision = result["structured"]
+        # `structured` is null unless the model honoured the schema, so this
+        # is checked rather than indexed -- a KeyError here would look like a
+        # bug in your loop when it is really a model that answered in prose.
+        decision = result.get("structured")
+        if not isinstance(decision, dict) or "action" not in decision:
+            return ("gave up: no decision in the response "
+                    f"({str(result.get('text'))[:200]!r})")
         print(f"  step {step + 1}: {decision['action']}")
 
         if decision["action"] == "answer":
@@ -65,4 +72,14 @@ def run(question: str, max_steps: int = 4) -> str:
 
 
 if __name__ == "__main__":
-    print(run("What are the best phones under 50000 INR in India right now?"))
+    try:
+        print(run("What are the best phones under 50000 INR in India right now?"))
+    except urllib.error.HTTPError as exc:
+        # urlopen raises on 4xx/5xx. The body is the server's JSON error
+        # envelope, which is worth far more to you than a traceback.
+        body = exc.read().decode("utf-8", "replace")
+        try:
+            detail = json.loads(body)["error"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            detail = body[:500]
+        raise SystemExit(f"server returned {exc.code}: {detail}")

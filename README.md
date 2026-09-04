@@ -12,7 +12,7 @@ You're building something on an LLM. You're not shipping yet — you're rewritin
 
 Meanwhile you already pay for Claude Pro or ChatGPT Plus, and both ship a CLI that runs non-interactively against your existing login.
 
-`devllm` wraps those CLIs behind one small interface, so your dev loop runs on the subscription you already have and your production code swaps to a real API client in one line.
+`devllm` puts those CLIs behind one small HTTP endpoint, so your dev loop runs on the subscription you already have. Your code posts JSON to `localhost:8765`; when you ship, you point that same call at a real API instead.
 
 ```
 your project
@@ -39,7 +39,9 @@ python server.py --check     # is a CLI installed and logged in?
 python server.py             # http://localhost:8765
 ```
 
-Open [http://localhost:8765](http://localhost:8765) and send one prompt to prove it works — it's a plain HTML form, nothing to install.
+`--check` does more than look for the executable: it **makes one real call per installed backend** to prove the whole path works, which takes 10–40s each and spends a small amount of your subscription quota. That is the point — an installed CLI that is logged out looks identical to a working one until something actually asks it a question.
+
+Open [http://localhost:8765](http://localhost:8765) and send one prompt to prove it works — it's a small built-in page, nothing to install.
 
 Or call it from code:
 
@@ -50,9 +52,20 @@ Start the server first:  python server.py
 """
 
 import json
+import urllib.error
 import urllib.request
 
 URL = "http://localhost:8765/generate"
+
+
+def explain(exc: urllib.error.HTTPError) -> str:
+    """urlopen raises on 4xx/5xx. The body is the server's JSON error
+    envelope, which is worth far more to you than a traceback."""
+    body = exc.read().decode("utf-8", "replace")
+    try:
+        return f"server returned {exc.code}: {json.loads(body)['error']}"
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return f"server returned {exc.code}: {body[:500]}"
 
 
 def generate(prompt: str, **options) -> dict:
@@ -67,10 +80,15 @@ def generate(prompt: str, **options) -> dict:
 
 
 if __name__ == "__main__":
-    result = generate("Recommend one phone under 50000 INR. One sentence.")
+    try:
+        result = generate("Recommend one phone under 50000 INR. One sentence.")
+    except urllib.error.HTTPError as exc:
+        raise SystemExit(explain(exc))
     print(result["text"])
     print(f"\n[{result['backend']} in {result['duration_s']}s]")
 ```
+
+`Content-Type: application/json` is required, not decorative — see the `415` row below.
 
 That's the whole interface. Everything below is reference material.
 
@@ -93,7 +111,7 @@ npm install -g @openai/codex                # then run: codex login
 
 ### `POST /generate`
 
-Only `prompt` is required; every other field falls back to a server default set by command-line flags.
+Requests must carry `Content-Type: application/json`. Only `prompt` is required; every other field falls back to a server default set by command-line flags.
 
 ```json
 {
@@ -145,12 +163,15 @@ Errors return the same envelope with a real HTTP status:
 |---|---|
 | Malformed JSON, missing/empty `prompt`, unknown `backend`, invalid `schema`, `system` that isn't a string or null, `timeout` that isn't a positive integer | 400 |
 | Missing or invalid token when auth is enabled | 401 |
+| `Content-Type` is anything other than `application/json` | 415 |
 | Queue full | 429 |
 | CLI ran but failed (including not logged in), or returned unparseable output | 502 |
 | CLI not installed | 503 |
 | Request timed out | 504 |
 
 Status codes are load-bearing: callers will use `raise_for_status()` and `response.ok`, and a 200 carrying an error body would break them.
+
+The `415` is a security control. A cross-origin `fetch` sending `Content-Type: text/plain` is a CORS *simple* request — the browser delivers it with no preflight, so any page you have open could otherwise POST here, spawn a CLI and spend your subscription. Requiring `application/json` forces a preflight, which this server does not answer. Binding to localhost does not help: the request comes from your own browser.
 
 ### `GET /health`
 
@@ -170,7 +191,7 @@ Status codes are load-bearing: callers will use `raise_for_status()` and `respon
 
 ### `GET /`
 
-Serves a browser playground: prompt, system prompt, model, a backend selector, a reasoning (codex) dropdown, and an optional JSON schema. Its purpose is narrow — it exists so a new user can confirm the server actually answers *before* touching their own code, the difference between "my integration is broken" and "my CLI was never logged in". It's a smoke-test surface, not a product surface.
+Serves a browser playground: prompt, system prompt, model, a backend selector, a reasoning (codex) dropdown, and an optional JSON schema. Its purpose is narrow — it exists so a new user can confirm the server actually answers *before* touching their own code, the difference between "my integration is broken" and "my CLI was never logged in". It's a smoke-test surface, not a product surface. It is not behind the token check, and it cannot send one either — see `DEVLLM_TOKEN` below.
 
 ---
 
@@ -208,9 +229,9 @@ Flags on `server.py`, chosen so bare `python server.py` is right for the common 
 | `--concurrency` | 2 |
 | `--timeout` | 300 |
 | `--allow-remote` | off |
-| `--check` | runs the install/login report and exits, without starting the server |
+| `--check` | runs the install/login report and exits, without starting the server. Makes one real call per installed backend to prove the whole path works — 10–40s and a little quota each. Exits non-zero if nothing is installed **or** a live call fails |
 
-`DEVLLM_TOKEN` is the only environment variable. When set — at any bind address — requests must carry `Authorization: Bearer <token>` or receive `401`.
+`DEVLLM_TOKEN` is the only environment variable. When set — at any bind address — requests must carry `Authorization: Bearer <token>` or receive `401`. Note that the browser page at `/` cannot authenticate: it sends no `Authorization` header, so while a token is set the page still loads but every **Send** fails with `401 missing or invalid token`. Use `curl` or a client of your own when testing with a token.
 
 If no backend is installed the server still starts, logs a clear warning naming the install commands, and returns `503` from `/generate`.
 
@@ -227,28 +248,28 @@ A CLI is not an API. Roughly **10 seconds of every call is process startup**, an
 | claude | `--model sonnet` | **~10s** | of which model time was 1.8s — the rest is Node boot |
 | claude | `--model haiku` | ~12s | no faster; a smaller model does not help |
 | codex | default (`xhigh` reasoning) | **~31s** | the CLI's own default |
-| codex | `reasoning_effort="low"` | **~11s** | `devllm`'s default |
-| codex | `reasoning_effort="none"` | ~12s | no better than `low` |
+| codex | `"reasoning": "low"` | **~11s** | the server's default |
+| codex | `"reasoning": "none"` | ~12s | no better than `low` |
 
 Two things follow:
 
-1. **`CodexCLI` defaults to `reasoning_effort="low"`**, which is a ~3x speedup over the CLI's own default. Raise it when you want quality over iteration speed.
+1. **The codex backend defaults to `"reasoning": "low"`**, which is a ~3x speedup over the CLI's own default. Raise it in the request body when you want quality over iteration speed.
 2. **Pick a Claude model for output quality, not speed.** Startup dominates, so `sonnet` costs about the same wall-clock as `haiku`.
 
 Watch the token counts too. Each call is a fresh process, so the system prompt and tool schemas are re-sent every time:
 
 | Claude invocation | Cached input tokens per call |
 |---|---:|
-| stock system prompt (`system=None`) | ~12,500 |
-| `devllm`'s default `system=` | ~4,100 |
+| stock system prompt (`"system": null`) | ~12,500 |
+| the server's default system prompt | ~4,100 |
 
 That per-call overhead — not the number of requests — is what exhausts a subscription's limits.
 
 ---
 
-## Gotchas this library handles for you
+## Gotchas the server handles for you
 
-These cost real debugging time. They're solved inside `devllm`; they're documented here because you'll hit them if you roll your own.
+These cost real debugging time. They're solved behind the endpoint; they're documented here because you'll hit them if you roll your own.
 
 | Gotcha | What happens | Fix |
 |---|---|---|
@@ -257,8 +278,8 @@ These cost real debugging time. They're solved inside `devllm`; they're document
 | **Claude's schema output** | With `--json-schema`, the parsed object is on `structured_output`. `result` stays prose, so `json.loads(result)` fails | read `structured_output` |
 | **cp1252 consoles** | Printing `₹` (or any non-Latin-1 char) raises `UnicodeEncodeError` on a default Windows console | `sys.stdout.reconfigure(encoding="utf-8")` — `devllm`'s CLI does this for you |
 | **Noisy Codex stdout** | stdout is a human transcript: banner, token counts, log lines | read the answer from `-o <file>`, don't scrape |
-| **Agents that wander** | Left alone, both CLIs will happily read and write your files | `devllm` disables their tools by default (`tools=True` to opt in) |
-| **They think they're coding assistants** | With its stock prompt, Claude Code *refuses* ordinary questions: "phone buying advice isn't something I can help well with" | `devllm` replaces the system prompt by default (`DEFAULT_SYSTEM`). Pass `system=None` to get the CLI's own identity back |
+| **Agents that wander** | Left alone, both CLIs will happily read and write your files | `devllm` disables their tools |
+| **They think they're coding assistants** | With its stock prompt, Claude Code *refuses* ordinary questions: "phone buying advice isn't something I can help well with" | `devllm` replaces the system prompt by default. Send `"system": null` to get the CLI's own identity back |
 
 ---
 
