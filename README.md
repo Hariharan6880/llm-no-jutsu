@@ -1,5 +1,7 @@
 # devllm
 
+[![tests](https://github.com/Hariharan6880/llm-no-jutsu/actions/workflows/tests.yml/badge.svg)](https://github.com/Hariharan6880/llm-no-jutsu/actions/workflows/tests.yml)
+
 **Use the Claude Code / Codex CLI you already have as an LLM backend in Python — for local development, so you stop burning API credits while you experiment.**
 
 Zero dependencies. Python 3.10+. MIT.
