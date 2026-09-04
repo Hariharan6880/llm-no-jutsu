@@ -93,17 +93,31 @@ npm install -g @openai/codex                # then run: codex login
 
 ### `POST /generate`
 
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `prompt` | string | yes | non-empty |
-| `backend` | `"claude"` \| `"codex"` | no | defaults to the server's default backend |
-| `model` | string | no | e.g. `"sonnet"`; backend-specific |
-| `schema` | object | no | a JSON Schema; when given, the parsed object comes back on `structured` |
-| `system` | string \| null | no | overrides the server's default system prompt; `null` sends no system prompt at all |
-| `reasoning` | string | no | Codex only — `"low"` (default), `"none"`, `"high"`, `"xhigh"`, etc. |
-| `timeout` | integer | no | per-request ceiling in seconds, capped at the server's `--timeout` |
+Only `prompt` is required; every other field falls back to a server default set by command-line flags.
 
-Response:
+```json
+{
+  "prompt": "Recommend a phone under 50000 INR.",
+  "backend": "claude",
+  "model": "sonnet",
+  "system": "You are a product recommendation engine.",
+  "schema": { "type": "object", "properties": {} },
+  "reasoning": "low",
+  "timeout": 300
+}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `prompt` | string, required | The user message. Non-empty after stripping. |
+| `backend` | `"claude"` \| `"codex"` | Defaults to the server's `--backend`. |
+| `model` | string | Backend-specific. Defaults to the server's `--model`. |
+| `system` | string \| null | **Omitted** → the server's default system prompt. **`null`** → suppress the system prompt entirely, using the CLI's own. **String** → use it. |
+| `schema` | object | A JSON Schema. When present, the parsed object is returned in `structured`. |
+| `reasoning` | string | Codex only: `none`/`low`/`medium`/`high`/`xhigh`/`max`. Silently ignored for `claude` rather than rejected. |
+| `timeout` | integer | Seconds. Clamped to the server's `--timeout` ceiling rather than rejected. |
+
+Response, `200`:
 
 ```json
 {
@@ -112,35 +126,51 @@ Response:
   "structured": null,
   "backend": "claude",
   "model": "sonnet",
-  "duration_s": 9.8,
-  "usage": {
-    "input_tokens": 4,
-    "output_tokens": 120,
-    "cache_read_tokens": 4096,
-    "cache_write_tokens": 0
-  }
+  "duration_s": 12.3,
+  "usage": { "input_tokens": 4, "output_tokens": 231,
+             "cache_read_tokens": 4218, "cache_write_tokens": 720 }
 }
 ```
 
-Status codes:
+`structured` is `null` unless `schema` was supplied. `usage` is `null` for `codex`, which reports no token counts — callers must not assume it is present.
 
-| Status | Meaning |
+Errors return the same envelope with a real HTTP status:
+
+```json
+{ "ok": false, "error": "codex did not respond within 300s",
+  "error_type": "BackendTimeoutError" }
+```
+
+| Condition | Status |
 |---|---|
-| 200 | success |
-| 400 | bad request — missing/invalid `prompt`, `schema`, `system` or `timeout` |
-| 401 | missing or invalid bearer token (only when `DEVLLM_TOKEN` is set) |
-| 429 | queue full — too many requests already waiting for a CLI slot |
-| 502 | the CLI ran but failed, or its output couldn't be parsed |
-| 503 | no backend CLI is installed/available |
-| 504 | the CLI didn't finish within the timeout |
+| Malformed JSON, missing/empty `prompt`, unknown `backend`, invalid `schema` | 400 |
+| Missing or invalid token when auth is enabled | 401 |
+| Queue full | 429 |
+| CLI ran but failed, or returned unparseable output | 502 |
+| CLI not installed or not logged in | 503 |
+| Request timed out | 504 |
+
+Status codes are load-bearing: callers will use `raise_for_status()` and `response.ok`, and a 200 carrying an error body would break them.
 
 ### `GET /health`
 
-Always 200 — an unconfigured server is still a running one. Reports which backends are installed, the server's default backend, and current queue occupancy. Performs no model call.
+```json
+{
+  "status": "ok",
+  "backends": {
+    "claude": { "installed": true,  "login": "subscription: pro" },
+    "codex":  { "installed": false, "login": "no auth file (run `codex login`)" }
+  },
+  "default_backend": "claude",
+  "queue": { "active": 0, "waiting": 0, "concurrency": 2 }
+}
+```
+
+`default_backend` is `null` when no backend is installed. `status` is `"ok"` when at least one backend is installed, `"unconfigured"` otherwise — the server still starts and still answers `/health` so a first-time user can tell "server is down" from "server is up but no CLI is logged in". This performs no live model call.
 
 ### `GET /`
 
-A plain HTML page for driving the server by hand: prompt, system prompt, model, and an optional JSON schema. No build step, no JS framework.
+Serves a browser playground: prompt, system prompt, model, and an optional JSON schema. Its purpose is narrow — it exists so a new user can confirm the server actually answers *before* touching their own code, the difference between "my integration is broken" and "my CLI was never logged in". It's a smoke-test surface, not a product surface.
 
 ---
 
@@ -167,22 +197,24 @@ If a client reports a timeout, this is almost always the fix — the server is n
 
 ## Configuration
 
-Flags to `server.py`:
+Flags on `server.py`, chosen so bare `python server.py` is right for the common case:
 
-| Flag | Default | Notes |
-|---|---|---|
-| `--port` | `8765` | |
-| `--host` | `127.0.0.1` | see "binding off localhost" below |
-| `--backend` | auto-detected | `claude` or `codex`; first installed backend, preferring claude |
-| `--model` | backend default | e.g. `sonnet` |
-| `--concurrency` | `2` | concurrent CLI processes; each is a heavy subprocess |
-| `--timeout` | `300` | per-request ceiling in seconds; a request may lower it, never raise it |
-| `--allow-remote` | off | permit binding off localhost |
-| `--check` | — | report install/login state for each CLI, then exit |
+| Flag | Default |
+|---|---|
+| `--port` | 8765 |
+| `--host` | 127.0.0.1 |
+| `--backend` | first installed backend, preferring claude |
+| `--model` | backend default (`sonnet` for claude) |
+| `--concurrency` | 2 |
+| `--timeout` | 300 |
+| `--allow-remote` | off |
+| `--check` | runs the install/login report and exits, without starting the server |
 
-`DEVLLM_TOKEN` (environment variable): when set, every request must send `Authorization: Bearer <token>`, and `/generate`/`/health` reply 401 without it.
+`DEVLLM_TOKEN` is the only environment variable. When set — at any bind address — requests must carry `Authorization: Bearer <token>` or receive `401`.
 
-**Binding off localhost** takes three deliberate actions, because this endpoint spawns subprocesses using your paid subscription login: pass a non-local `--host`, pass `--allow-remote`, and set `DEVLLM_TOKEN`. Missing any one of the three refuses to start.
+If no backend is installed the server still starts, logs a clear warning naming the install commands, and returns `503` from `/generate`.
+
+**Binding off localhost.** The server binds `127.0.0.1` by default and refuses to bind anything else unless you pass **both** `--host <addr>` and `--allow-remote`, *and* set `DEVLLM_TOKEN` in the environment. When bound remotely it prints a warning naming the risk. This endpoint executes subprocesses using paid credentials, so the defaults are safe and the escape hatch — a home server, a container — cannot be triggered accidentally. The token is read from the environment rather than a flag so it does not land in shell history.
 
 ---
 
