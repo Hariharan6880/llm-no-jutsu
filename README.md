@@ -1,17 +1,8 @@
-# devllm
+# llm-no-jutsu
 
 [![tests](https://github.com/Hariharan6880/llm-no-jutsu/actions/workflows/tests.yml/badge.svg)](https://github.com/Hariharan6880/llm-no-jutsu/actions/workflows/tests.yml)
 
-**Use the Claude Code / Codex CLI you already have as an LLM backend in Python — for local development, so you stop burning API credits while you experiment.**
-
-Zero dependencies. Python 3.10+. MIT.
-
-```python
-from devllm import ClaudeCLI
-
-llm = ClaudeCLI(model="sonnet")
-print(llm.generate("Name three phone brands sold in India.").text)
-```
+**Use the Claude Code / Codex CLI you already have as a local LLM endpoint — so prototyping costs nothing beyond the subscription you already pay for.**
 
 ---
 
@@ -24,127 +15,174 @@ Meanwhile you already pay for Claude Pro or ChatGPT Plus, and both ship a CLI th
 `devllm` wraps those CLIs behind one small interface, so your dev loop runs on the subscription you already have and your production code swaps to a real API client in one line.
 
 ```
-Your Python code
+your project
       ↓
-   LLM.generate(prompt)          ← the only thing your app depends on
+  POST localhost:8765/generate
       ↓
-  subprocess → claude -p / codex exec
+  claude -p / codex exec
       ↓
-  your existing subscription login
+  your subscription
       ↓
-  response parsed back into Python
+  JSON response
 ```
 
 > **This is a development tool.** It shells out to an interactive CLI, so it is slow, stateless and not built for concurrency or throughput. Ship on the official [Anthropic](https://docs.anthropic.com/) or [OpenAI](https://platform.openai.com/docs) APIs. Consumer subscription terms are written around interactive use of the CLI, not around powering other applications — use your judgement about what's appropriate, and don't put this in production.
 
 ---
 
-## Install
+## Quickstart
 
 ```bash
-pip install git+https://github.com/<your-username>/devllm
+git clone https://github.com/Hariharan6880/llm-no-jutsu
+cd llm-no-jutsu
+python server.py --check     # is a CLI installed and logged in?
+python server.py             # http://localhost:8765
 ```
 
-Then install at least one CLI and log in once:
+Open [http://localhost:8765](http://localhost:8765) and send one prompt to prove it works — it's a plain HTML form, nothing to install.
+
+Or call it from code:
+
+```python
+"""Call the devllm server from Python. Standard library only.
+
+Start the server first:  python server.py
+"""
+
+import json
+import urllib.request
+
+URL = "http://localhost:8765/generate"
+
+
+def generate(prompt: str, **options) -> dict:
+    payload = json.dumps({"prompt": prompt, **options}).encode("utf-8")
+    request = urllib.request.Request(
+        URL, data=payload, headers={"Content-Type": "application/json"}
+    )
+    # A call takes 10-40 seconds. Any client talking to this server needs a
+    # generous timeout; the default in most HTTP libraries is far too short.
+    with urllib.request.urlopen(request, timeout=300) as response:
+        return json.load(response)
+
+
+if __name__ == "__main__":
+    result = generate("Recommend one phone under 50000 INR. One sentence.")
+    print(result["text"])
+    print(f"\n[{result['backend']} in {result['duration_s']}s]")
+```
+
+That's the whole interface. Everything below is reference material.
+
+---
+
+## Requirements
+
+- Python 3.10+
+- No dependencies — the server is standard library only
+- At least one CLI installed and logged in:
 
 ```bash
 npm install -g @anthropic-ai/claude-code    # then run: claude
 npm install -g @openai/codex                # then run: codex login
 ```
 
-Check everything works:
+---
 
-```bash
-devllm doctor
+## API reference
+
+### `POST /generate`
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `prompt` | string | yes | non-empty |
+| `backend` | `"claude"` \| `"codex"` | no | defaults to the server's default backend |
+| `model` | string | no | e.g. `"sonnet"`; backend-specific |
+| `schema` | object | no | a JSON Schema; when given, the parsed object comes back on `structured` |
+| `system` | string \| null | no | overrides the server's default system prompt; `null` sends no system prompt at all |
+| `reasoning` | string | no | Codex only — `"low"` (default), `"none"`, `"high"`, `"xhigh"`, etc. |
+| `timeout` | integer | no | per-request ceiling in seconds, capped at the server's `--timeout` |
+
+Response:
+
+```json
+{
+  "ok": true,
+  "text": "...",
+  "structured": null,
+  "backend": "claude",
+  "model": "sonnet",
+  "duration_s": 9.8,
+  "usage": {
+    "input_tokens": 4,
+    "output_tokens": 120,
+    "cache_read_tokens": 4096,
+    "cache_write_tokens": 0
+  }
+}
 ```
 
-```
-devllm doctor
-----------------------------------------------------
-  claude   C:\...\npm\claude.CMD
-           subscription: pro
-           live call OK in 18.7s -> 'ok'
+Status codes:
 
-  codex    C:\...\npm\codex.CMD
-           subscription: ChatGPT OAuth
-           live call OK in 13.0s -> 'ok'
-----------------------------------------------------
-At least one backend is working. You are good to go.
-```
+| Status | Meaning |
+|---|---|
+| 200 | success |
+| 400 | bad request — missing/invalid `prompt`, `schema`, `system` or `timeout` |
+| 401 | missing or invalid bearer token (only when `DEVLLM_TOKEN` is set) |
+| 429 | queue full — too many requests already waiting for a CLI slot |
+| 502 | the CLI ran but failed, or its output couldn't be parsed |
+| 503 | no backend CLI is installed/available |
+| 504 | the CLI didn't finish within the timeout |
+
+### `GET /health`
+
+Always 200 — an unconfigured server is still a running one. Reports which backends are installed, the server's default backend, and current queue occupancy. Performs no model call.
+
+### `GET /`
+
+A plain HTML page for driving the server by hand: prompt, system prompt, model, and an optional JSON schema. No build step, no JS framework.
 
 ---
 
-## Use it
+## Timeouts
 
-### Plain text
-
-```python
-from devllm import ClaudeCLI, CodexCLI
-
-llm = ClaudeCLI(model="sonnet")          # or CodexCLI()
-r = llm.generate("Recommend a phone under 50000 INR.")
-
-r.text          # the answer
-r.duration_s    # how long it took
-r.usage         # token counts, when the backend reports them
-r.argv          # the exact command that ran — paste it into a terminal
-```
-
-### Structured output
-
-Both CLIs can be constrained to a JSON Schema. This is what makes them usable inside an agent — you branch on data, not on scraped markdown.
+A call takes **10–40 seconds** — most of it CLI process startup, not model time. Most HTTP clients default to far less than that and will time out on the first real request. Raise the timeout explicitly:
 
 ```python
-SCHEMA = {
-    "type": "object",
-    "properties": {
-        "picks": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "price_inr": {"type": "integer"},
-                },
-                "required": ["name", "price_inr"],
-                "additionalProperties": False,
-            },
-        }
-    },
-    "required": ["picks"],
-    "additionalProperties": False,
-}
-
-r = llm.generate("Pick 2 phones under 50000 INR.", schema=SCHEMA)
-
-for pick in r.structured["picks"]:       # a real dict, already parsed
-    print(pick["name"], pick["price_inr"])
+requests.post(url, json=payload, timeout=300)
 ```
 
-### Choose the backend from config
-
-```python
-from devllm import get_backend
-
-llm = get_backend()             # $DEVLLM_BACKEND, or "claude"
-llm = get_backend("codex")
+```javascript
+// fetch has no timeout option; use AbortSignal
+fetch(url, { method: "POST", body, signal: AbortSignal.timeout(300_000) })
 ```
 
-### The playground
-
-```bash
-devllm play
+```javascript
+axios.post(url, payload, { timeout: 300_000 })
 ```
 
-A local page for driving both backends by hand: prompt, system prompt, model, reasoning effort, and an optional JSON schema. Every result shows the answer, the parsed object, the token counts, and **the exact command line that produced it** — so it doubles as a way to learn the CLI flags.
+If a client reports a timeout, this is almost always the fix — the server is not hung.
 
-### From the shell
+---
 
-```bash
-devllm ask "Name three phone brands sold in India."
-devllm ask -b codex --schema schema.json "List three phone brands."
-cat long_prompt.txt | devllm ask --json
-```
+## Configuration
+
+Flags to `server.py`:
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--port` | `8765` | |
+| `--host` | `127.0.0.1` | see "binding off localhost" below |
+| `--backend` | auto-detected | `claude` or `codex`; first installed backend, preferring claude |
+| `--model` | backend default | e.g. `sonnet` |
+| `--concurrency` | `2` | concurrent CLI processes; each is a heavy subprocess |
+| `--timeout` | `300` | per-request ceiling in seconds; a request may lower it, never raise it |
+| `--allow-remote` | off | permit binding off localhost |
+| `--check` | — | report install/login state for each CLI, then exit |
+
+`DEVLLM_TOKEN` (environment variable): when set, every request must send `Authorization: Bearer <token>`, and `/generate`/`/health` reply 401 without it.
+
+**Binding off localhost** takes three deliberate actions, because this endpoint spawns subprocesses using your paid subscription login: pass a non-local `--host`, pass `--allow-remote`, and set `DEVLLM_TOKEN`. Missing any one of the three refuses to start.
 
 ---
 
@@ -192,35 +230,26 @@ These cost real debugging time. They're solved inside `devllm`; they're document
 
 ---
 
-## Going to production
+## Verified on
 
-Your application depends on `LLM`, never on a concrete backend, so the swap is one line at the construction site:
+| | Library and API (offline tests) | Live CLI calls |
+|---|---|---|
+| Windows 11 | CI | manually verified |
+| Linux | CI | untested |
+| macOS | CI | untested |
 
-```python
-from devllm import LLM, ClaudeCLI, LLMResponse
+CI runs the offline test suite on Linux, macOS and Windows across Python 3.10–3.12 on every push. A live call needs a logged-in CLI holding a real subscription session, which a CI runner cannot have — those were verified by hand on Windows 11.
 
-class AnthropicAPI(LLM):
-    name = "anthropic-api"
-    def __init__(self, model="claude-sonnet-5"):
-        from anthropic import Anthropic
-        self.client, self.model = Anthropic(), model
+---
 
-    def generate(self, prompt, *, schema=None, system=None) -> LLMResponse:
-        msg = self.client.messages.create(
-            model=self.model, max_tokens=4096,
-            system=system or "",
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return LLMResponse(text=msg.content[0].text, backend=self.name)
+## Limitations
 
-
-def build_llm() -> LLM:
-    if os.getenv("APP_ENV") == "production":
-        return AnthropicAPI()
-    return ClaudeCLI(model="sonnet")     # ← the only line that differs
-```
-
-See [`examples/04_production_swap.py`](examples/04_production_swap.py).
+- **Slow.** ~10s floor per call. Fine for iterating, wrong for anything user-facing.
+- **Stateless.** Every call is a new process with no memory. Multi-turn means re-sending the transcript yourself (see [`examples/agent_loop.py`](examples/agent_loop.py)).
+- **No streaming.** The CLIs can stream; `devllm` waits for the final result.
+- **Not concurrency-friendly.** Each call is a full CLI process. Use `--concurrency` to cap how many run at once, and don't fan out dozens.
+- **No real system role on Codex.** `codex exec` has no system-prompt flag, so `system=` is prepended to the prompt.
+- **Flags drift.** Verified against Claude Code 2.1.175 and codex-cli 0.152.1. Run `python server.py --check` after upgrading either CLI.
 
 ---
 
@@ -228,30 +257,20 @@ See [`examples/04_production_swap.py`](examples/04_production_swap.py).
 
 | File | Shows |
 |---|---|
-| [`01_basic.py`](examples/01_basic.py) | prompt in, text out |
-| [`02_structured_output.py`](examples/02_structured_output.py) | JSON Schema → parsed dict |
-| [`03_agent_loop.py`](examples/03_agent_loop.py) | a tool-calling agent where devllm is only the reasoning step |
-| [`04_production_swap.py`](examples/04_production_swap.py) | dev/prod backends behind one interface |
+| [`examples/python_client.py`](examples/python_client.py) | prompt in, text out, from the standard library only |
+| [`examples/node_client.js`](examples/node_client.js) | the same, from Node's built-in `fetch` |
+| [`examples/curl.sh`](examples/curl.sh) | plain text and structured output from the shell |
+| [`examples/agent_loop.py`](examples/agent_loop.py) | a tool-calling agent where devllm is only the reasoning step |
 
 ---
-
-## Limitations
-
-- **Slow.** ~10s floor per call. Fine for iterating, wrong for anything user-facing.
-- **Stateless.** Every call is a new process with no memory. Multi-turn means re-sending the transcript yourself (see `examples/03_agent_loop.py`).
-- **No streaming.** The CLIs can stream; `devllm` waits for the final result.
-- **Not concurrency-friendly.** Each call is a full CLI process. Don't fan out dozens.
-- **No real system role on Codex.** `codex exec` has no system-prompt flag, so `system=` is prepended to the prompt.
-- **Flags drift.** Verified against Claude Code 2.1.175 and codex-cli 0.152.1. Run `devllm doctor` after upgrading either CLI.
 
 ## Development
 
 ```bash
-git clone https://github.com/<your-username>/devllm
-cd devllm
-pip install -e .
-python -m unittest discover -s tests -v    # 18 tests, no network, no tokens
+python -m unittest discover -s tests
 ```
+
+`tests/test_live.py` makes real calls against an installed, logged-in CLI and skips itself when none is available — it won't fail CI or a machine with no CLI installed.
 
 ## License
 
