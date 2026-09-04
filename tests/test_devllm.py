@@ -217,12 +217,12 @@ class TestUnsetSentinel(unittest.TestCase):
     `"system": null` the meaning "no system prompt", which the old
     None-means-default behaviour made impossible to express."""
 
-    @mock.patch("devllm.claude.resolve_executable", return_value="claude.CMD")
-    @mock.patch("devllm.claude.run_process")
-    def test_constructor_none_suppresses_system_prompt(self, run, _which):
-        run.return_value = (_completed(json.dumps(CLAUDE_ENVELOPE)), 1.0)
-        ClaudeCLI(system=None).generate("hi")
-        self.assertNotIn("--system-prompt", run.call_args[0][0])
+    @mock.patch("devllm.codex.resolve_executable", return_value="codex.CMD")
+    @mock.patch("devllm.codex.run_process")
+    def test_codex_per_call_none_suppresses_system_prompt(self, run, _which):
+        run.side_effect = TestCodex._writes("ok")
+        CodexCLI().generate("hi", system=None)
+        self.assertEqual(run.call_args[0][1], "hi")
 
     @mock.patch("devllm.claude.resolve_executable", return_value="claude.CMD")
     @mock.patch("devllm.claude.run_process")
