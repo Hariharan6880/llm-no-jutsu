@@ -116,7 +116,17 @@ $('go').onclick = async () => {
   };
   const sys = $('system').value.trim();
   if (sys) body.system = sys;
-  if ($('useSchema').checked) body.schema = JSON.parse($('schema').value);
+  if ($('useSchema').checked) {
+    try {
+      body.schema = JSON.parse($('schema').value);
+    } catch (err) {
+      $('status').className = '';
+      $('status').innerHTML = '<span class="pill bad">FAILED</span>';
+      $('out').innerHTML = '<h3>Error</h3><pre>'
+        + esc('Schema is not valid JSON: ' + err) + '</pre>';
+      return;
+    }
+  }
   $('go').disabled = true; $('out').innerHTML = '';
   const t0 = Date.now();
   const tick = setInterval(() => {
