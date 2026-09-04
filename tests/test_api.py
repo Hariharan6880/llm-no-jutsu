@@ -3,10 +3,19 @@
 import threading
 import time
 import unittest
+from contextlib import contextmanager
 from unittest import mock
 
 from devllm.api import QueueFull, RequestGate, ServerConfig, handle_generate
-from devllm.base import UNSET, LLMResponse, Usage
+from devllm.base import (
+    UNSET,
+    BackendInvocationError,
+    BackendNotFoundError,
+    BackendTimeoutError,
+    LLMResponse,
+    OutputParseError,
+    Usage,
+)
 
 
 class TestServerConfig(unittest.TestCase):
@@ -222,6 +231,61 @@ class TestHandleGenerateValidation(unittest.TestCase):
                                        ServerConfig(backend=None), self.gate)
         self.assertEqual(status, 503)
         self.assertIn("npm install", body["error"])
+
+
+class TestHandleGenerateErrors(unittest.TestCase):
+    def setUp(self):
+        self.config = ServerConfig(backend="claude")
+        self.gate = RequestGate()
+
+    def _raises(self, exc):
+        patcher = mock.patch("devllm.api.ClaudeCLI")
+        cls = patcher.start()
+        self.addCleanup(patcher.stop)
+        cls.return_value.generate.side_effect = exc
+        return handle_generate({"prompt": "hi"}, self.config, self.gate)
+
+    def test_missing_cli_is_503(self):
+        status, body = self._raises(BackendNotFoundError("claude not on PATH"))
+        self.assertEqual(status, 503)
+        self.assertEqual(body["error_type"], "BackendNotFoundError")
+
+    def test_timeout_is_504(self):
+        status, body = self._raises(BackendTimeoutError("timed out"))
+        self.assertEqual(status, 504)
+        self.assertEqual(body["error_type"], "BackendTimeoutError")
+
+    def test_cli_failure_is_502(self):
+        status, body = self._raises(BackendInvocationError("exit 1"))
+        self.assertEqual(status, 502)
+        self.assertEqual(body["error_type"], "BackendInvocationError")
+
+    def test_unparseable_output_is_502(self):
+        status, body = self._raises(OutputParseError("not json"))
+        self.assertEqual(status, 502)
+
+    def test_error_bodies_are_never_ok(self):
+        _, body = self._raises(BackendTimeoutError("timed out"))
+        self.assertFalse(body["ok"])
+        self.assertIn("error", body)
+
+
+class TestQueueFullIs429(unittest.TestCase):
+    @mock.patch("devllm.api.ClaudeCLI")
+    def test_returns_429_when_the_gate_rejects(self, cls):
+        cls.return_value.generate.return_value = _response()
+
+        class FullGate(RequestGate):
+            @contextmanager
+            def slot(self):
+                raise QueueFull("8 requests already queued")
+                yield  # pragma: no cover
+
+        status, body = handle_generate({"prompt": "hi"},
+                                       ServerConfig(backend="claude"),
+                                       FullGate())
+        self.assertEqual(status, 429)
+        self.assertEqual(body["error_type"], "QueueFull")
 
 
 if __name__ == "__main__":

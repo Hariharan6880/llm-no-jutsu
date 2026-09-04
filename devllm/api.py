@@ -11,7 +11,15 @@ import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 
-from .base import BACKEND_NAMES, UNSET
+from .base import (
+    BACKEND_NAMES,
+    UNSET,
+    BackendInvocationError,
+    BackendNotFoundError,
+    BackendTimeoutError,
+    LLMError,
+    OutputParseError,
+)
 from .claude import ClaudeCLI
 from .codex import CodexCLI
 
@@ -80,6 +88,15 @@ _INSTALL_HINT = (
     "`npm install -g @anthropic-ai/claude-code` then run `claude`, or "
     "`npm install -g @openai/codex` then `codex login`"
 )
+
+# Status codes are load-bearing: callers use raise_for_status(), so a failure
+# must never come back as 200.
+_STATUS_FOR_ERROR = {
+    BackendNotFoundError: 503,
+    BackendTimeoutError: 504,
+    BackendInvocationError: 502,
+    OutputParseError: 502,
+}
 
 
 def resolve_default_backend() -> str | None:
@@ -152,7 +169,14 @@ def handle_generate(payload: dict, config: ServerConfig,
     except ValueError as exc:
         return _error(400, str(exc), "BadRequest")
 
-    response = llm.generate(prompt, schema=schema)
+    try:
+        with gate.slot():
+            response = llm.generate(prompt, schema=schema)
+    except QueueFull as exc:
+        return _error(429, str(exc), "QueueFull")
+    except LLMError as exc:
+        status = _STATUS_FOR_ERROR.get(type(exc), 502)
+        return _error(status, str(exc), type(exc).__name__)
 
     return 200, {
         "ok": True,
