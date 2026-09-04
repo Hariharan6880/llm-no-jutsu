@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 
-from .base import LLMError, resolve_executable
+from .base import BACKEND_NAMES, LLMError, resolve_executable
 from .claude import ClaudeCLI
 from .codex import CodexCLI
 
@@ -41,49 +41,63 @@ def _codex_login() -> str:
     return "logged in"
 
 
+_LOGIN_CHECKS = {"claude": _claude_login, "codex": _codex_login}
+_INSTALL_HINTS = {
+    "claude": "npm install -g @anthropic-ai/claude-code   then run `claude`",
+    "codex": "npm install -g @openai/codex               then `codex login`",
+}
+
+
+def check_backends() -> dict[str, dict]:
+    """Installed/login state for every backend. Performs no model call."""
+    report: dict[str, dict] = {}
+    for name in BACKEND_NAMES:
+        path = resolve_executable(name)
+        report[name] = {
+            "installed": path is not None,
+            "path": path,
+            "login": _LOGIN_CHECKS[name]() if path else "not installed",
+        }
+    return report
+
+
 def run_doctor(live: bool = True) -> bool:
-    """Print a report. Returns True if at least one backend works.
+    """Print a report. Returns True if at least one backend is installed.
 
     Args:
         live: Also send a real one-word prompt to each installed backend.
               Costs a few tokens and 10-30 seconds, but it is the only check
               that proves the whole path actually works.
     """
-    checks = [
-        ("claude", ClaudeCLI, _claude_login),
-        ("codex", CodexCLI, _codex_login),
-    ]
+    classes = {"claude": ClaudeCLI, "codex": CodexCLI}
+    report = check_backends()
 
-    print("devllm doctor\n" + "-" * 52)
-    any_working = False
+    print("devllm check\n" + "-" * 52)
+    any_installed = False
 
-    for name, cls, login_check in checks:
-        path = resolve_executable(name)
-        if path is None:
+    for name, state in report.items():
+        if not state["installed"]:
             print(f"  {name:8s} NOT FOUND on PATH")
             continue
-        print(f"  {name:8s} {path}")
-        print(f"  {'':8s} {login_check()}")
+        any_installed = True
+        print(f"  {name:8s} {state['path']}")
+        print(f"  {'':8s} {state['login']}")
 
-        if not live:
-            any_working = True
-            continue
-
-        try:
-            response = cls().generate(_PROMPT)
-        except LLMError as exc:
-            print(f"  {'':8s} live call FAILED: {exc}")
-        else:
-            any_working = True
-            print(f"  {'':8s} live call OK in {response.duration_s:.1f}s "
-                  f"-> {response.text.strip()[:40]!r}")
+        if live:
+            try:
+                response = classes[name]().generate(_PROMPT)
+            except LLMError as exc:
+                print(f"  {'':8s} live call FAILED: {exc}")
+            else:
+                print(f"  {'':8s} live call OK in {response.duration_s:.1f}s "
+                      f"-> {response.text.strip()[:40]!r}")
         print()
 
     print("-" * 52)
-    if any_working:
-        print("At least one backend is working. You are good to go.")
+    if any_installed:
+        print("At least one backend is installed. You are good to go.")
     else:
-        print("No working backend. Install one:")
-        print("  npm install -g @anthropic-ai/claude-code   then run `claude`")
-        print("  npm install -g @openai/codex               then `codex login`")
-    return any_working
+        print("No backend installed. Install one:")
+        for hint in _INSTALL_HINTS.values():
+            print(f"  {hint}")
+    return any_installed
